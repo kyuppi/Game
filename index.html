@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>友情崩壊！イライラ2Dレース</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- React & ReactDOM CDN -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <!-- Babel CDN (JSXのコンパイル用) -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #111827;
+        }
+        canvas {
+            display: block;
+        }
+        .touch-none {
+            touch-action: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef, useCallback } = React;
+
+        // アイコンコンポーネントの簡易実装 (Lucide CDN対応)
+        const Icon = ({ name, size = 24, className = "" }) => {
+            const iconRef = useRef(null);
+            useEffect(() => {
+                if (window.lucide) {
+                    window.lucide.createIcons();
+                }
+            }, [name]);
+            return <i data-lucide={name} className={className} style={{ width: size, height: size }}></i>;
+        };
+
+        // --- ゲーム定数 ---
+        const GAME_WIDTH = 800;
+        const GAME_HEIGHT = 600;
+        const PLAYER_SIZE = 50;
+        const COIN_SIZE = 40;
+        const WIN_SCORE = 10;
+        const TROLL_SCORE = 9;
+
+        function App() {
+            // --- Refs ---
+            const p1Ref = useRef({ x: 100, y: 300 - PLAYER_SIZE/2, score: 0, trolled: false });
+            const p2Ref = useRef({ x: 700 - PLAYER_SIZE, y: 300 - PLAYER_SIZE/2, score: 0, trolled: false });
+            const coinRef = useRef({ x: 400, y: 300, type: 'normal' });
+            
+            const keys = useRef({
+                w: false, a: false, s: false, d: false,
+                ArrowUp: false, ArrowDown: false, ArrowLeft: false, ArrowRight: false
+            });
+            
+            const trapData = useRef({ reverse: false, speed: 1 });
+            const gameStateRef = useRef('start');
+            const loopId = useRef(null);
+            const eventTimer = useRef(null);
+
+            const p1El = useRef(null);
+            const p2El = useRef(null);
+            const coinEl = useRef(null);
+
+            // --- States ---
+            const [gameState, setGameState] = useState('start');
+            const [scores, setScores] = useState({ p1: 0, p2: 0 });
+            const [coinType, setCoinType] = useState('normal');
+            const [announcement, setAnnouncement] = useState('');
+            const [trapEffect, setTrapEffect] = useState(null);
+            const [winner, setWinner] = useState(null);
+
+            const triggerAnnouncement = useCallback((msg) => {
+                setAnnouncement(msg);
+                setTimeout(() => {
+                    setAnnouncement(prev => prev === msg ? '' : prev);
+                }, 2500);
+            }, []);
+
+            const spawnCoin = useCallback(() => {
+                const newX = Math.random() * (GAME_WIDTH - COIN_SIZE * 2) + COIN_SIZE;
+                const newY = Math.random() * (GAME_HEIGHT - COIN_SIZE * 2) + COIN_SIZE;
+                coinRef.current.x = newX;
+                coinRef.current.y = newY;
+                
+                if (coinEl.current) {
+                    coinEl.current.style.left = `${(newX / GAME_WIDTH) * 100}%`;
+                    coinEl.current.style.top = `${(newY / GAME_HEIGHT) * 100}%`;
+                }
+                
+                coinRef.current.type = 'normal';
+                setCoinType('normal');
+            }, []);
+
+            const handleScore = useCallback((playerStr) => {
+                const player = playerStr === 'P1' ? p1Ref.current : p2Ref.current;
+                
+                if (coinRef.current.type === 'poison') {
+                    player.score = Math.max(0, player.score - 2);
+                    triggerAnnouncement(`☠️ 毒！ ${playerStr} -2点！`);
+                } else {
+                    let newScore = player.score + 1;
+                    if (newScore === TROLL_SCORE && !player.trolled) {
+                        newScore = 0;
+                        player.trolled = true;
+                        triggerAnnouncement(`🚨 エラー：${playerStr}のスコアがリセットされました 🚨`);
+                    } else if (newScore >= WIN_SCORE) {
+                        setWinner(playerStr);
+                        setGameState('end');
+                        gameStateRef.current = 'end';
+                    }
+                    player.score = newScore;
+                }
+                
+                setScores({ p1: p1Ref.current.score, p2: p2Ref.current.score });
+                spawnCoin();
+            }, [spawnCoin, triggerAnnouncement]);
+
+            const checkCollision = (rect1, rect2Size, rect2) => {
+                return (
+                    rect1.x < rect2.x + rect2Size &&
+                    rect1.x + PLAYER_SIZE > rect2.x &&
+                    rect1.y < rect2.y + rect2Size &&
+                    rect1.y + PLAYER_SIZE > rect2.y
+                );
+            };
+
+            const update = useCallback(() => {
+                if (gameStateRef.current !== 'playing') return;
+
+                const speed = 6 * trapData.current.speed;
+                const dir = trapData.current.reverse ? -1 : 1;
+
+                if (keys.current.w) p1Ref.current.y -= speed * dir;
+                if (keys.current.s) p1Ref.current.y += speed * dir;
+                if (keys.current.a) p1Ref.current.x -= speed * dir;
+                if (keys.current.d) p1Ref.current.x += speed * dir;
+
+                p1Ref.current.x = Math.max(0, Math.min(GAME_WIDTH - PLAYER_SIZE, p1Ref.current.x));
+                p1Ref.current.y = Math.max(0, Math.min(GAME_HEIGHT - PLAYER_SIZE, p1Ref.current.y));
+
+                if (keys.current.ArrowUp) p2Ref.current.y -= speed * dir;
+                if (keys.current.ArrowDown) p2Ref.current.y += speed * dir;
+                if (keys.current.ArrowLeft) p2Ref.current.x -= speed * dir;
+                if (keys.current.ArrowRight) p2Ref.current.x += speed * dir;
+
+                p2Ref.current.x = Math.max(0, Math.min(GAME_WIDTH - PLAYER_SIZE, p2Ref.current.x));
+                p2Ref.current.y = Math.max(0, Math.min(GAME_HEIGHT - PLAYER_SIZE, p2Ref.current.y));
+
+                if (p1El.current) {
+                    p1El.current.style.left = `${(p1Ref.current.x / GAME_WIDTH) * 100}%`;
+                    p1El.current.style.top = `${(p1Ref.current.y / GAME_HEIGHT) * 100}%`;
+                }
+                if (p2El.current) {
+                    p2El.current.style.left = `${(p2Ref.current.x / GAME_WIDTH) * 100}%`;
+                    p2El.current.style.top = `${(p2Ref.current.y / GAME_HEIGHT) * 100}%`;
+                }
+
+                if (checkCollision(p1Ref.current, COIN_SIZE, coinRef.current)) {
+                    handleScore('P1');
+                } else if (checkCollision(p2Ref.current, COIN_SIZE, coinRef.current)) {
+                    handleScore('P2');
+                }
+
+                loopId.current = requestAnimationFrame(update);
+            }, [handleScore]);
+
+            const triggerRandomEvent = useCallback(() => {
+                if (gameStateRef.current !== 'playing') return;
+                const events = ['reverse', 'swap', 'spin', 'poison', 'blackout'];
+                const event = events[Math.floor(Math.random() * events.length)];
+
+                switch (event) {
+                    case 'reverse':
+                        trapData.current.reverse = true;
+                        triggerAnnouncement('🔄 操作反転！ 🔄');
+                        setTimeout(() => { trapData.current.reverse = false; }, 4000);
+                        break;
+                    case 'swap':
+                        const temp = { ...p1Ref.current };
+                        p1Ref.current.x = p2Ref.current.x;
+                        p1Ref.current.y = p2Ref.current.y;
+                        p1Ref.current.score = p2Ref.current.score;
+                        p1Ref.current.trolled = p2Ref.current.trolled;
+                        p2Ref.current.x = temp.x;
+                        p2Ref.current.y = temp.y;
+                        p2Ref.current.score = temp.score;
+                        p2Ref.current.trolled = temp.trolled;
+                        setScores({ p1: p1Ref.current.score, p2: p2Ref.current.score });
+                        triggerAnnouncement('🎭 キャラ＆スコア 交換！ 🎭');
+                        break;
+                    case 'spin':
+                        setTrapEffect('spin');
+                        triggerAnnouncement('🌪️ 画面回転！ 🌪️');
+                        setTimeout(() => { setTrapEffect(null); }, 4000);
+                        break;
+                    case 'poison':
+                        coinRef.current.type = 'poison';
+                        setCoinType('poison');
+                        triggerAnnouncement('☠️ 毒コイン出現！ ☠️');
+                        break;
+                    case 'blackout':
+                        setTrapEffect('blackout');
+                        triggerAnnouncement('💡 停電！ 💡');
+                        setTimeout(() => { setTrapEffect(null); }, 3000);
+                        break;
+                }
+            }, [triggerAnnouncement]);
+
+            useEffect(() => {
+                const onKeyDown = (e) => { if (keys.current.hasOwnProperty(e.key)) keys.current[e.key] = true; };
+                const onKeyUp = (e) => { if (keys.current.hasOwnProperty(e.key)) keys.current[e.key] = false; };
+                window.addEventListener('keydown', onKeyDown);
+                window.addEventListener('keyup', onKeyUp);
+                return () => {
+                    window.removeEventListener('keydown', onKeyDown);
+                    window.removeEventListener('keyup', onKeyUp);
+                    cancelAnimationFrame(loopId.current);
+                    clearInterval(eventTimer.current);
+                };
+            }, []);
+
+            const startGame = () => {
+                p1Ref.current = { x: 100, y: 300 - PLAYER_SIZE/2, score: 0, trolled: false };
+                p2Ref.current = { x: 700 - PLAYER_SIZE, y: 300 - PLAYER_SIZE/2, score: 0, trolled: false };
+                setScores({ p1: 0, p2: 0 });
+                setGameState('playing');
+                gameStateRef.current = 'playing';
+                setWinner(null);
+                setTrapEffect(null);
+                spawnCoin();
+                triggerAnnouncement('GAME START!');
+                if (loopId.current) cancelAnimationFrame(loopId.current);
+                loopId.current = requestAnimationFrame(update);
+                if (eventTimer.current) clearInterval(eventTimer.current);
+                eventTimer.current = setInterval(triggerRandomEvent, 4000);
+            };
+
+            const TouchButton = ({ k, label, cls }) => (
+                <button
+                    onPointerDown={(e) => { e.preventDefault(); keys.current[k] = true; }}
+                    onPointerUp={(e) => { e.preventDefault(); keys.current[k] = false; }}
+                    onPointerLeave={(e) => { e.preventDefault(); keys.current[k] = false; }}
+                    className={`w-12 h-12 md:w-16 md:h-16 bg-white/20 rounded-full flex items-center justify-center text-white text-xl md:text-2xl font-black touch-none select-none active:bg-white/50 backdrop-blur-sm ${cls}`}
+                >
+                    {label}
+                </button>
+            );
+
+            return (
+                <div className="min-h-screen bg-gray-900 flex flex-col items-center justify-center relative overflow-hidden font-sans touch-none">
+                    <div className="absolute top-4 left-0 w-full flex justify-between px-8 z-20 pointer-events-none">
+                        <div className="text-red-500 font-black text-3xl md:text-5xl drop-shadow-lg bg-black/50 px-4 py-2 rounded-xl">P1: {scores.p1}</div>
+                        <div className="text-blue-500 font-black text-3xl md:text-5xl drop-shadow-lg bg-black/50 px-4 py-2 rounded-xl">P2: {scores.p2}</div>
+                    </div>
+
+                    {announcement && (
+                        <div className="absolute top-1/4 left-1/2 transform -translate-x-1/2 z-50 pointer-events-none w-full text-center">
+                            <div className="inline-block bg-yellow-400 text-black font-extrabold text-2xl md:text-4xl px-8 py-4 shadow-2xl animate-bounce border-y-8 border-black">
+                                {announcement}
+                            </div>
+                        </div>
+                    )}
+
+                    <div className={`w-full max-w-4xl aspect-[4/3] relative bg-slate-800 border-4 border-slate-600 rounded-lg shadow-2xl overflow-hidden transition-transform duration-700 ease-in-out ${trapEffect === 'spin' ? 'rotate-180' : ''}`}>
+                        <div className="absolute inset-0 opacity-10" style={{ backgroundImage: 'radial-gradient(#fff 1px, transparent 1px)', backgroundSize: '40px 40px' }}></div>
+                        {trapEffect === 'blackout' && <div className="absolute inset-0 bg-black z-10 opacity-95"></div>}
+                        
+                        <div ref={p1El} className="absolute bg-red-500 border-4 border-red-300 rounded-lg shadow-xl flex items-center justify-center text-white font-bold z-20" style={{ width: `${(PLAYER_SIZE/GAME_WIDTH)*100}%`, height: `${(PLAYER_SIZE/GAME_HEIGHT)*100}%` }}>
+                            <span className="text-xs md:text-sm">(`･ω･´)</span>
+                        </div>
+                        <div ref={p2El} className="absolute bg-blue-500 border-4 border-blue-300 rounded-lg shadow-xl flex items-center justify-center text-white font-bold z-20" style={{ width: `${(PLAYER_SIZE/GAME_WIDTH)*100}%`, height: `${(PLAYER_SIZE/GAME_HEIGHT)*100}%` }}>
+                            <span className="text-xs md:text-sm">( ﾟДﾟ)</span>
+                        </div>
+                        <div ref={coinEl} className={`absolute flex items-center justify-center z-20 transition-transform duration-200 ${coinType === 'poison' ? 'animate-pulse' : 'animate-bounce'}`} style={{ width: `${(COIN_SIZE/GAME_WIDTH)*100}%`, height: `${(COIN_SIZE/GAME_HEIGHT)*100}%` }}>
+                            {coinType === 'normal' ? <Icon name="star" size={COIN_SIZE} className="text-yellow-400 fill-yellow-400" /> : <Icon name="skull" size={COIN_SIZE} className="text-purple-500 fill-purple-500" />}
+                        </div>
+                    </div>
+
+                    <div className="absolute bottom-4 w-full px-4 flex justify-between z-30 pointer-events-none md:hidden">
+                        <div className="grid grid-cols-3 grid-rows-3 gap-1 pointer-events-auto">
+                            <div /> <TouchButton k="w" label="W" /> <div />
+                            <TouchButton k="a" label="A" /> <TouchButton k="s" label="S" /> <TouchButton k="d" label="D" />
+                        </div>
+                        <div className="grid grid-cols-3 grid-rows-3 gap-1 pointer-events-auto">
+                            <div /> <TouchButton k="ArrowUp" label="↑" /> <div />
+                            <TouchButton k="ArrowLeft" label="←" /> <TouchButton k="ArrowDown" label="↓" /> <TouchButton k="ArrowRight" label="→" />
+                        </div>
+                    </div>
+
+                    {gameState === 'start' && (
+                        <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-gray-900/95 backdrop-blur-sm text-white p-6 text-center">
+                            <Icon name="zap" size={80} className="text-yellow-400 mb-6" />
+                            <h1 className="text-4xl md:text-6xl font-black mb-4">イライラ<span className="text-red-500">2D</span>レース</h1>
+                            <button onClick={startGame} className="bg-gradient-to-r from-green-400 to-blue-500 text-white font-bold text-2xl py-4 px-12 rounded-full shadow-2xl hover:scale-105 active:scale-95 transition-all">対戦スタート！</button>
+                        </div>
+                    )}
+
+                    {gameState === 'end' && (
+                        <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-gray-900/95 backdrop-blur-sm text-white p-6 text-center">
+                            <Icon name="trophy" size={100} className="text-yellow-400 mb-6" />
+                            <h1 className="text-6xl font-black mb-8"><span className={winner === 'P1' ? 'text-red-500' : 'text-blue-500'}>{winner}</span> WIN!</h1>
+                            <button onClick={startGame} className="bg-white text-black font-bold text-xl py-3 px-8 rounded-full shadow-lg hover:bg-gray-200 active:scale-95 transition-all">もう一回遊ぶ</button>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
